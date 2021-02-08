@@ -4,6 +4,7 @@ import cv2
 import numpy as np
 import math
 import matplotlib.pyplot as plt
+import tensorflow as tf
 from source.common_util import *
 
 # 가장 상위 폴더로 인식하게 해주는 코드
@@ -24,27 +25,28 @@ def video_enhancement_depth(file_path):
     cap = cv2.VideoCapture(file_path)
 
     image_input_data = []
-    print(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-    gesture_section = cap.get(cv2.CAP_PROP_FRAME_COUNT) // NUM_GESTURE
+    # print(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    gesture_section = cap.get(cv2.CAP_PROP_FRAME_COUNT) / NUM_GESTURE
     while cap.isOpened():
         success, img = cap.read()
         if not success:
             break
 
+        img = cv2.resize(img, (128, 171))
         gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
         median = cv2.medianBlur(gray, 3)
 
         if int(cap.get(cv2.CAP_PROP_POS_FRAMES) % gesture_section) == 0:
             # print(cap.get(cv2.CAP_PROP_POS_FRAMES))
+            median = tf.image.random_crop(median, [112, 112])
             image_input_data.append(median)
 
-        cv2.imshow('video', gray)
-        cv2.imshow('median', median)
+        # cv2.imshow('video', gray)
+        # cv2.imshow('median', median)
         cv2.waitKey(10)
     while len(image_input_data) != NUM_GESTURE:
         if len(image_input_data) < NUM_GESTURE:
-            image_input_data.insert([image_input_data[int(len(image_input_data) / 2)]],
-                                    [image_input_data[int(len(image_input_data) / 2)]])
+            image_input_data.insert(int(len(image_input_data) / 2), image_input_data[int(len(image_input_data) / 2)])
         elif len(image_input_data) > NUM_GESTURE:
             image_input_data.pop()
 
@@ -53,26 +55,15 @@ def video_enhancement_depth(file_path):
     return image_input_data
 
 
-def video_enhancement(file_path):
-    cap = cv2.VideoCapture(file_path)
-    image = []
-    sigma_list = np.uint8([15, 80, 250])
-    while cap.isOpened():
-        success, img = cap.read()
-        gaussian = automatedMSRCR(img=img, sigma_list=sigma_list)
-        if not success:
-            break
-        cv2.imshow('video', img)
-        cv2.imshow('rgb', gaussian)
-        cv2.waitKey(10)
-
-    cap.release()
-
-
 def video_enhancement_RGB(file_path):
+    '''
+    RGB 데이터를 받아서 multi scale retinex video 데이터와 optical flow video 데이터를 튜플형태로 반환시켜준다.
+    :param file_path: RGB input video
+    :return: multi_scale_retinex_input_data, optical_flow_input_data
+    '''
     cap = cv2.VideoCapture(file_path)
 
-    delay = int(1000 / int(cap.get(cv2.CAP_PROP_FPS)))  # waitKey 시간지연
+    delay = 10  # waitKey 시간지연
     image_input_data = []  # retinex input data
     optical_flow_list = []  # optical flow all list
     optical_flow_input_data = []  # optical flow input data
@@ -84,13 +75,16 @@ def video_enhancement_RGB(file_path):
     section_sum = 0
 
     ret, frame1 = cap.read()
+    frame1 = cv2.resize(frame1, (128, 171))
     prev = cv2.cvtColor(frame1, cv2.COLOR_BGR2GRAY)
     hsv = np.zeros_like(frame1)
     hsv[..., 1] = 255
+
     while cap.isOpened():
         success, frame2 = cap.read()
         if not success:
             break
+        frame2 = cv2.resize(frame2, (128, 171))
         next_frame = cv2.cvtColor(frame2, cv2.COLOR_BGR2GRAY)
 
         flow = cv2.calcOpticalFlowFarneback(prev, next_frame, None, 0.5, 3, 13, 10, 5, 1.1, 0)  # dense optical flow 계산
@@ -101,10 +95,12 @@ def video_enhancement_RGB(file_path):
 
         bgr = cv2.cvtColor(hsv, cv2.COLOR_HSV2BGR)  # 색으로 표현한 HSV영상을 BGR로 변경
         section_sum += mag.mean()
+        bgr = tf.image.random_crop(bgr, [112, 112, 3])
         optical_flow_list.append(bgr)
 
         if int(cap.get(cv2.CAP_PROP_POS_FRAMES) % gesture_section) == 0:  # multi_scale_retinex 가우시안 필터를 적용할 32개의 프레임 저장
             gaussian = automatedMSRCR(img=frame2, sigma_list=Sigma_List)  # multi_scale_retinex 삽입
+            gaussian = tf.image.random_crop(gaussian, [112, 112, 3])
             image_input_data.append(gaussian)  # gaussian 저장
 
         if int(cap.get(cv2.CAP_PROP_POS_FRAMES) % optical_flow_section) == 0:  # section별 계산을 위한 조건
@@ -130,8 +126,7 @@ def video_enhancement_RGB(file_path):
         elif len(image_input_data) > NUM_GESTURE:
             image_input_data.pop()
     count = 0
-    print(sum_average_of_frame)
-    for i in range(len(frame_average)):
+    for i in range(int(len(frame_average))):
         select_frame = frame_average[i] / sum_average_of_frame * NUM_GESTURE
 
         for cnt in range(int(round(select_frame))):
@@ -141,7 +136,13 @@ def video_enhancement_RGB(file_path):
                 optical_flow_input_data.append(optical_flow_list[count])
                 continue
             if get_section_frame[count + 1] <= count + cnt:
+                if len(get_section_frame) >= count + 1:
+                    optical_flow_input_data.append(optical_flow_list[-1])
+                    continue
                 optical_flow_input_data.append(optical_flow_list[get_section_frame[count + 1] - 1])
+                continue
+            if count + cnt >= len(optical_flow_list):
+                optical_flow_input_data.append(optical_flow_list[-1])
                 continue
             optical_flow_input_data.append(optical_flow_list[count + cnt])
 
@@ -149,9 +150,11 @@ def video_enhancement_RGB(file_path):
 
     while len(optical_flow_input_data) != NUM_GESTURE:
         if len(optical_flow_input_data) < NUM_GESTURE:
-            optical_flow_input_data.insert(int(len(optical_flow_input_data) / 2), optical_flow_input_data[int(len(optical_flow_input_data) / 2)])
+            optical_flow_input_data.insert(int(len(optical_flow_input_data) / 2),
+                                           optical_flow_input_data[int(len(optical_flow_input_data) / 2)])
         elif len(optical_flow_input_data) > NUM_GESTURE:
             optical_flow_input_data.pop()
+
     # for i in range(16):
     #     cv2.imshow('bgr', optical_flow_input_data[i])   # 튜블방식으로 저장되기 때문에 인덱스만 불러와도 가능
     #     cv2.waitKey(delay)
@@ -163,12 +166,13 @@ def video_enhancement_RGB(file_path):
     # plt.plot(frame_num, frame_average, marker='o')
     # plt.show()
     # cap.release()
-    print(len(image_input_data))
-    print(len(optical_flow_input_data))
-    for i in range(32):
-        cv2.imshow('retinex', image_input_data[i])
-        cv2.imshow('optical_flow', optical_flow_input_data[i])
-        cv2.waitKey(delay)
+    # print(len(image_input_data))
+    # print(len(optical_flow_input_data))
+    # for i in range(32):
+    #     cv2.imshow('retinex', image_input_data[i])
+    #     cv2.imshow('optical_flow', optical_flow_input_data[i])
+    #     cv2.waitKey(delay)
+    # for i in range(32):
 
     return image_input_data, optical_flow_input_data  # retinex와 optical flow 데이터 두개 return
 
@@ -228,74 +232,3 @@ def multi_scale_retinex(img, sigma_list):
     retinex = retinex / len(sigma_list)
 
     return retinex
-
-
-def read_depth_video_file(file_path):  # 너의 목표 : 하나의 동영상에서 32개의 프레임을 밷는 함수
-    cap = cv2.VideoCapture(file_path)
-    video_cut_frame = []
-    delay = int(1000 / (int(cap.get(cv2.CAP_PROP_FPS))))
-    if not cap.isOpened():
-        print("could not open :", file_path)
-    exit(0)
-    while True:
-        success, image = cap.read()
-
-        if not success:
-            break
-
-        img_gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-        img_gray = cv2.medianBlur(img_gray, 3)
-        cv2.imshow('median_filter', img_gray)
-        cv2.waitKey(delay)
-
-        length = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-        width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-        height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-        fps = cap.get(cv2.CAP_PROP_FPS)
-        video_cut_frame.append([length, width, height, fps])
-        print(video_cut_frame)
-
-    return image
-
-
-'''def video_dense_optical_flow(video_path):
-    cap = cv2.VideoCapture(video_path)  # 비디오 읽기
-    delay = int(1000 / int(cap.get(cv2.CAP_PROP_FRAME_COUNT)))
-    ret, frame1 = cap.read()
-    prev = cv2.cvtColor(frame1, cv2.COLOR_BGR2GRAY)  # dense optical flow를 위한 grayscale로 변환
-    hsv = np.zeros_like(frame1)  # hsv에 프레임과 같은 리스트 생성
-    hsv[..., 1] = 255
-    w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-    h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-    frame_average = []
-    section_sum = 0
-
-    while True:
-        ret, frame2 = cap.read()
-        if ret is False:
-            break
-        next_frame = cv2.cvtColor(frame2, cv2.COLOR_BGR2GRAY)  # grayscale로 변환
-
-        flow = cv2.calcOpticalFlowFarneback(prev, next_frame, None, 0.5, 3, 13, 10, 5, 1.1, 0)  # dense optical flow 계산
-        mag, ang = cv2.cartToPolar(flow[..., 0], flow[..., 1])  # 크기와 방향성분으로 변경
-        # print(mag.shape)
-        hsv[..., 0] = ang * 180 / np.pi / 2
-        hsv[..., 2] = cv2.normalize(mag, None, 0, 255, cv2.NORM_MINMAX)
-        rgb = cv2.cvtColor(hsv, cv2.COLOR_HSV2BGR)
-
-        section_sum += mag.mean()
-        # frame_average.append(mag.mean())
-
-        if int(cap.get(cv2.CAP_PROP_POS_FRAMES) % ((cap.get(cv2.CAP_PROP_FRAME_COUNT)) / SPLIT_SECTION)) == 0:
-            section_sum /= ((cap.get(cv2.CAP_PROP_FRAME_COUNT)) / SPLIT_SECTION)
-            frame_average.append(section_sum)
-            section_sum = 0
-        cv2.imshow('frame2', rgb)
-        cv2.waitKey(delay)
-
-        prev = next_frame  # 현재 프레임을 이전프레임으로 바꿈
-    frame_num = np.arange(1, len(frame_average) + 1)
-    print(frame_average)
-    plt.plot(frame_num, frame_average, marker='o')
-    plt.show()
-'''
